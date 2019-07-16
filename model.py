@@ -5,7 +5,7 @@ import numpy as np
 class Model:
     def __init__(self, config):
         self.embeddings = config['EMBEDDINGS']
-        # self.embedding_dim = config['EMBEDDING_DIM']
+        self.embedding_dim = config['EMBEDDING_DIM']
         self.hp = config.hp
         self.max_seq_length = config['MAX_SEQ_LENGTH']
         self.learning_rate = config['LR']
