@@ -6,13 +6,17 @@ class Model:
     def __init__(self, config):
         self.embeddings = config['EMBEDDINGS']
         self.embedding_dim = config['EMBEDDING_DIM']
-        self.hp = config.hp
-        self.max_seq_length = config['MAX_SEQ_LENGTH']
+        self.max_seq_length_x = config['MAX_SEQ_LENGTH_X']
+        self.max_seq_length_y = config['MAX_SEQ_LENGTH_Y']
         self.learning_rate = config['LR']
+        self.dropout_rate = config['DROPOUT_RATE']
+        self.block_nums = config['BLOCK_NUMS']
+        self.head_nums = config['HEAD_NUMS']
+        self.ff_dim = config['FF_DIM']
 
     def build_net(self):
-        tf_x = tf.placeholder(dtype=tf.float32, shape=[None, self.max_seq_length])
-        tf_y = tf.placeholder(dtype=tf.float32, shape=[None, self.max_seq_length])
+        tf_x = tf.placeholder(dtype=tf.float32, shape=[None, self.max_seq_length_x])
+        tf_y = tf.placeholder(dtype=tf.float32, shape=[None, self.max_seq_length_y])
         memory, sents1 = self.encode(tf_x)
         logits, y_hat, y, sents2 = self.decode(tf_y, memory)
         cross_extropy = tf.nn.softmax_cross_entropy_with_logits(logits, tf_y)
@@ -23,40 +27,40 @@ class Model:
         self.accuracy = tf.reduce_mean(tf.cast(correct))
 
     def encode(self, xs, training=True):
-        '''
+        """
         Returns
         memory: encoder outputs. (N, T1, d_model)
-        '''
+        """
         with tf.variable_scope("encoder", reuse=tf.AUTO_REUSE):
             x, seqlens, sents1 = xs
             # embedding: 计算word embedding和position embedding，使用word embedding+position embedding作为输入
             enc = tf.nn.embedding_lookup(self.embeddings, x)  # (N, T1, d_model)
-            enc *= self.hp.d_model ** 0.5  # scale
-            enc += self.positional_encoding(enc, self.hp.maxlen1)
+            enc *= self.embedding_dim ** 0.5  # scale
+            enc += self.positional_encoding(enc, self.max_seq_length_x)
             # dropout防止过拟合处理
-            enc = tf.layers.dropout(enc, self.hp.dropout_rate, training=training)
+            enc = tf.layers.dropout(enc, self.dropout_rate, training=training)
 
             # Blocks: num_blocks=6，Encoder部分叠加6层(multihead_attention+Feed Forward)
             # 注意Encoder部分的attention是self attention，因此query,key,value都等于输入enc
             # muultihead_attention函数参数num_heads=8，共计算八个attention
             # causality=False表明此处对Attention的mask操作是padding mask
-            for i in range(self.hp.num_blocks):
+            for i in range(self.block_nums):
                 with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
                     # self-attention
                     enc = self.multihead_attention(queries=enc,
                                                    keys=enc,
                                                    values=enc,
-                                                   num_heads=self.hp.num_heads,
-                                                   dropout_rate=self.hp.dropout_rate,
+                                                   num_heads=self.head_nums,
+                                                   dropout_rate=self.dropout_rate,
                                                    training=training,
                                                    causality=False)
                     # feed forward: 前向传播
-                    enc = self.ff(enc, num_units=[self.hp.d_ff, self.hp.d_model])
+                    enc = self.ff(enc, num_units=[self.ff_dim, self.embedding_dim])
         memory = enc
         return memory, sents1
 
     def decode(self, ys, memory, training=True):
-        '''
+        """
         memory: encoder outputs. (N, T1, d_model)
 
         Returns
@@ -64,27 +68,27 @@ class Model:
         y_hat: (N, T2). int32
         y: (N, T2). int32
         sents2: (N,). string.
-        '''
+        """
         with tf.variable_scope("decoder", reuse=tf.AUTO_REUSE):
             decoder_inputs, y, seqlens, sents2 = ys
             # embedding: 和Encoder部分输入大体一致，也是word embedding+position embedding
             dec = tf.nn.embedding_lookup(self.embeddings, decoder_inputs)  # (N, T2, d_model)
-            dec *= self.hp.d_model ** 0.5  # scale
-            dec += self.positional_encoding(dec, self.hp.maxlen2)
-            dec = tf.layers.dropout(dec, self.hp.dropout_rate, training=training)
+            dec *= self.embedding_dim ** 0.5  # scale
+            dec += self.positional_encoding(dec, self.max_seq_length_y)
+            dec = tf.layers.dropout(dec, self.dropout_rate, training=training)
 
             # Blocks: num_blocks=6，Decoder部分叠加6层(Masked multihead attention+multihead_attention+Feed Forward)
             # Masked multihead attention是self attention，因此query,key,value都等于输入enc
             # num_heads=8，其中causality=True表明此处除了有padding mask还有sequence mask
             # 第二个multihead attention部分是self attention，其中query=舒睿enc、key,value为Encoder部分输出memory
-            for i in range(self.hp.num_blocks):
+            for i in range(self.block_nums):
                 with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
                     # Masked self-attention (Note that causality is True at this time)
                     dec = self.multihead_attention(queries=dec,
                                                    keys=dec,
                                                    values=dec,
-                                                   num_heads=self.hp.num_heads,
-                                                   dropout_rate=self.hp.dropout_rate,
+                                                   num_heads=self.head_nums,
+                                                   dropout_rate=self.dropout_rate,
                                                    training=training,
                                                    causality=True,
                                                    scope="self_attention")
@@ -92,16 +96,17 @@ class Model:
                     dec = self.multihead_attention(queries=dec,
                                                    keys=memory,
                                                    values=memory,
-                                                   num_heads=self.hp.num_heads,
-                                                   dropout_rate=self.hp.dropout_rate,
+                                                   num_heads=self.head_nums,
+                                                   dropout_rate=self.dropout_rate,
                                                    training=training,
                                                    causality=False,
                                                    scope="vanilla_attention")
                     ### Feed Forward: 前向传播
-                    dec = self.ff(dec, num_units=[self.hp.d_ff, self.hp.d_model])
+                    dec = self.ff(dec, num_units=[self.ff_dim, self.embedding_dim])
         # Final linear projection (embedding weights are shared)
-        weights = tf.transpose(self.embeddings)  # (d_model, vocab_size)
-        logits = tf.einsum('ntd,dk->ntk', dec, weights)  # (N, T2, vocab_size)
+        # weights = tf.transpose(self.embeddings)  # (d_model, vocab_size)
+        # logits = tf.einsum('ntd,dk->ntk', dec, weights)  # (N, T2, vocab_size)
+        logits = tf.matmul(dec, self.embeddings)
         y_hat = tf.to_int32(tf.argmax(logits, axis=-1))
         return logits, y_hat, y, sents2
 
@@ -194,7 +199,7 @@ class Model:
         return outputs
 
     def ff(self, inputs, num_units, scope="positionwise_feedforward"):
-        '''position-wise feed forward net. See 3.3
+        """position-wise feed forward net. See 3.3
 
         inputs: A 3d tensor with shape of [N, T, C].
         num_units: A list of two integers.
@@ -202,7 +207,7 @@ class Model:
 
         Returns:
         A 3d tensor with the same shape and dtype as inputs
-        '''
+        """
         with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
             # Inner layer: 做两次前向传播全连接操作
             outputs = tf.layers.dense(inputs, num_units[0], activation=tf.nn.relu)
@@ -220,7 +225,7 @@ class Model:
                             maxlen,
                             masking=True,
                             scope="positional_encoding"):
-        '''Sinusoidal Positional_Encoding. See 3.5
+        """Sinusoidal Positional_Encoding. See 3.5
         inputs: 3d tensor. (N, T, E)
         maxlen: scalar. Must be >= T
         masking: Boolean. If True, padding positions are set to zeros.
@@ -228,7 +233,7 @@ class Model:
 
         returns
         3d tensor that has the same shape as inputs.
-        '''
+        """
 
         E = inputs.get_shape().as_list()[-1]  # static
         N, T = tf.shape(inputs)[0], tf.shape(inputs)[1]  # dynamic
