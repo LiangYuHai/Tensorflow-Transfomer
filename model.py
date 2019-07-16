@@ -7,6 +7,20 @@ class Model:
         self.embeddings = config['EMBEDDINGS']
         # self.embedding_dim = config['EMBEDDING_DIM']
         self.hp = config.hp
+        self.max_seq_length = config['MAX_SEQ_LENGTH']
+        self.learning_rate = config['LR']
+
+    def build_net(self):
+        tf_x = tf.placeholder(dtype=tf.float32, shape=[None, self.max_seq_length])
+        tf_y = tf.placeholder(dtype=tf.float32, shape=[None, self.max_seq_length])
+        memory, sents1 = self.encode(tf_x)
+        logits, y_hat, y, sents2 = self.decode(tf_y, memory)
+        cross_extropy = tf.nn.softmax_cross_entropy_with_logits(logits, tf_y)
+        self.loss = tf.reduce_mean(cross_extropy)
+        self.predict_cls = y_hat
+        self.train_op = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
+        correct = tf.equal(y_hat, tf_y)
+        self.accuracy = tf.reduce_mean(tf.cast(correct))
 
     def encode(self, xs, training=True):
         '''
